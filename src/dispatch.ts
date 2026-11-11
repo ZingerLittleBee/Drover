@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { promisify } from "node:util";
+import { type Config, expandHome, resolveHarness, worktreePath } from "./config.ts";
 import { type Herdr, HerdrError } from "./herdr.ts";
 import type { Ledger, Worker } from "./ledger.ts";
 
@@ -24,7 +24,12 @@ export interface DispatchDeps {
   now?: () => Date;
 }
 
+export interface SpawnDeps extends DispatchDeps {
+  config: Config;
+}
+
 export interface SpawnInput {
+  /** A harness name from the config, or a herdr agent kind. */
   harness: string;
   repo: string;
   task: string;
@@ -42,11 +47,6 @@ function timestamp(deps: DispatchDeps): string {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
 async function readIfExists(path: string): Promise<string> {
@@ -96,12 +96,20 @@ async function deliver(deps: DispatchDeps, worker: Worker): Promise<Worker> {
 }
 
 /** Creates a worktree, starts the harness in it, and hands over the task. */
-export async function spawnWorker(deps: DispatchDeps, input: SpawnInput): Promise<SpawnOutcome> {
+export async function spawnWorker(deps: SpawnDeps, input: SpawnInput): Promise<SpawnOutcome> {
   const repo = expandHome(input.repo);
   if (!isAbsolute(repo)) throw new Error(`repo must be an absolute path, got "${input.repo}"`);
+  const harness = resolveHarness(deps.config, input.harness);
 
   const id = await deps.ledger.reserveId();
-  const created = await deps.herdr.createWorktree({ repo, branch: input.branch ?? `drover/${id}`, label: id });
+  const branch = input.branch ?? `drover/${id}`;
+  const directory = deps.config.worktreeDirectory;
+  const created = await deps.herdr.createWorktree({
+    repo,
+    branch,
+    label: id,
+    path: directory === undefined ? undefined : worktreePath(directory, repo, branch),
+  });
 
   // Recorded before anything else can fail, so a created worktree is never left untracked.
   const createdAt = timestamp(deps);
@@ -123,7 +131,7 @@ export async function spawnWorker(deps: DispatchDeps, input: SpawnInput): Promis
 
   try {
     await excludeResultDir(created.path);
-    await deps.herdr.startAgent({ name: id, kind: input.harness, paneId: created.paneId });
+    await deps.herdr.startAgent({ name: id, kind: harness.kind, paneId: created.paneId, args: harness.args });
     return { kind: "delivered", worker: await deliver(deps, worker) };
   } catch (error) {
     if (error instanceof HerdrError && WAITING_FOR_USER.includes(error.code)) {

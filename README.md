@@ -42,6 +42,50 @@ Some harnesses open on a question only you should answer, such as whether to tru
 
 Load Drover with `bin/drover` rather than `pi install`. Installing it would add its tools to every pi session, including pi sessions that are themselves workers.
 
+## Configuration
+
+Optional. Drover reads `~/.config/drover/config.json`. `XDG_CONFIG_HOME` is honored, and `DROVER_CONFIG` names another file. The file is read each time a worker is spawned, so a change applies to the next worker.
+
+```json
+{
+  "worktrees": {
+    "directory": "~/worktrees"
+  },
+  "harnesses": {
+    "codex": {
+      "args": ["--model", "<model>", "--sandbox", "workspace-write", "--ask-for-approval", "never"]
+    },
+    "codex-readonly": {
+      "kind": "codex",
+      "args": ["--sandbox", "read-only"]
+    },
+    "claude": {
+      "args": ["--model", "<model>", "--permission-mode", "acceptEdits"]
+    }
+  }
+}
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `worktrees.directory` | Where worktrees are created, as `<directory>/<repository name>/<branch>`. Without it, herdr uses its own `[worktrees] directory`. |
+| `harnesses.<name>.args` | Arguments passed to the harness as is. This is where its model and permissions are set. |
+| `harnesses.<name>.kind` | The herdr agent kind to start. Defaults to `<name>`. |
+
+An entry named after a herdr agent kind sets how that kind is started. An entry with any other name is a preset you ask for by name, as in "use codex-readonly in ~/code/my-app for this task". A harness without an entry is started with no extra arguments.
+
+Each harness has its own flags, so Drover does not translate them. The ones that matter most:
+
+| Harness | Model | Permissions |
+| --- | --- | --- |
+| codex | `--model` | `--sandbox read-only\|workspace-write\|danger-full-access`, `--ask-for-approval` |
+| claude | `--model` | `--permission-mode` |
+| grok | `--model` | `--permission-mode`, `--sandbox` |
+| pi | `--model`, `--thinking` | `--tools`, `--exclude-tools` |
+| opencode | | `--auto` |
+
+These are from codex 0.167, claude 2.1, grok 1.0, pi 1.4 and opencode 2.0. Run `<harness> --help` for the current list.
+
 ## State
 
 Workers are recorded in `~/.local/state/drover/ledger.json`, so they survive a restart of the dispatcher. `XDG_STATE_HOME` is honored, and `DROVER_STATE_DIR` overrides the directory.
@@ -60,13 +104,13 @@ To try a change against a real herdr without touching your own session, run an i
 herdr --session drover-dev server &
 export HERDR_SOCKET_PATH=~/.config/herdr/sessions/drover-dev/herdr.sock
 export DROVER_STATE_DIR="$(mktemp -d)"
-env -u HERDR_PANE_ID bin/drover --no-session -p "Use pi in /path/to/a/scratch/repo for this task: reply OK"
+env -u HERDR_PANE_ID bin/drover --no-session -p "Use pi in /path/to/a/scratch/repo for this task: reply OK" < /dev/null
 
 herdr session stop drover-dev
 herdr session delete drover-dev
 ```
 
-Worktrees are created in the directory herdr is configured to use, so remove the ones the trial created.
+`pi -p` waits for standard input to close when it is not a terminal, hence `< /dev/null`. Worktrees are created in the directory herdr or the Drover config names, so remove the ones the trial created. Set `DROVER_CONFIG` as well to try a config without touching your own.
 
 ## Status
 

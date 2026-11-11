@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { type DispatchDeps, spawnWorker, syncWorkers } from "../src/dispatch.ts";
+import type { Config } from "../src/config.ts";
+import { type SpawnDeps, spawnWorker, syncWorkers } from "../src/dispatch.ts";
 import { type CreatedWorktree, type Herdr, HerdrError, type LiveAgent } from "../src/herdr.ts";
 import { Ledger } from "../src/ledger.ts";
 
@@ -25,6 +26,9 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 class FakeHerdr implements Herdr {
   readonly agents: LiveAgent[] = [];
   readonly prompts: { target: string; text: string }[] = [];
+  readonly started: { name: string; kind: string; args: string[] }[] = [];
+  /** The `path` of each worktree request; undefined when herdr was left to choose. */
+  readonly requestedPaths: (string | undefined)[] = [];
   blockedAtStartup = false;
   /** Makes the next prompt fail once. */
   promptFailure: HerdrError | undefined;
@@ -35,8 +39,14 @@ class FakeHerdr implements Herdr {
     this.#worktreeRoot = worktreeRoot;
   }
 
-  async createWorktree(input: { repo: string; branch: string; label: string }): Promise<CreatedWorktree> {
-    const path = join(this.#worktreeRoot, input.label);
+  async createWorktree(input: {
+    repo: string;
+    branch: string;
+    label: string;
+    path?: string;
+  }): Promise<CreatedWorktree> {
+    this.requestedPaths.push(input.path);
+    const path = input.path ?? join(this.#worktreeRoot, input.label);
     try {
       await git(input.repo, "worktree", "add", "-q", "-b", input.branch, path);
     } catch {
@@ -45,7 +55,8 @@ class FakeHerdr implements Herdr {
     return { workspaceId: "w1", paneId: `w1:${input.label}`, path, branch: input.branch };
   }
 
-  async startAgent(input: { name: string; kind: string; paneId: string }): Promise<void> {
+  async startAgent(input: { name: string; kind: string; paneId: string; args: string[] }): Promise<void> {
+    this.started.push({ name: input.name, kind: input.kind, args: input.args });
     const status = this.blockedAtStartup ? "blocked" : "idle";
     this.agents.push({ name: input.name, paneId: input.paneId, kind: input.kind, status });
     if (this.blockedAtStartup) throw new HerdrError("agent_not_ready", `agent ${input.name} is blocked during startup`);
@@ -78,7 +89,9 @@ class FakeHerdr implements Herdr {
   }
 }
 
-async function setup(): Promise<{ deps: DispatchDeps; herdr: FakeHerdr; ledger: Ledger; repo: string }> {
+async function setup(
+  configure: (root: string) => Config = () => ({ harnesses: new Map() }),
+): Promise<{ deps: SpawnDeps; herdr: FakeHerdr; ledger: Ledger; repo: string; root: string }> {
   const root = await mkdtemp(join(tmpdir(), "drover-dispatch-"));
   const repo = join(root, "repo");
   await mkdir(repo);
@@ -99,7 +112,7 @@ async function setup(): Promise<{ deps: DispatchDeps; herdr: FakeHerdr; ledger: 
   );
   const herdr = new FakeHerdr(join(root, "worktrees"));
   const ledger = new Ledger(join(root, "state", "ledger.json"));
-  return { deps: { herdr, ledger, protocol: PROTOCOL }, herdr, ledger, repo };
+  return { deps: { herdr, ledger, protocol: PROTOCOL, config: configure(root) }, herdr, ledger, repo, root };
 }
 
 test("the task reaches the agent verbatim, followed by the result protocol", async () => {
@@ -115,6 +128,36 @@ test("the task reaches the agent verbatim, followed by the result protocol", asy
   assert.equal(stored?.status, "working");
   assert.equal(stored?.taskDelivered, true);
   assert.equal(stored?.branch, `drover/${outcome.worker.id}`);
+});
+
+test("a configured harness is started with its kind and arguments", async () => {
+  const { deps, herdr, ledger, repo } = await setup(() => ({
+    harnesses: new Map([["codex-readonly", { kind: "codex", args: ["--sandbox", "read-only"] }]]),
+  }));
+
+  const configured = await spawnWorker(deps, { harness: "codex-readonly", repo, task: "one" });
+  const plain = await spawnWorker(deps, { harness: "grok", repo, task: "two" });
+
+  assert.deepEqual(herdr.started, [
+    { name: configured.worker.id, kind: "codex", args: ["--sandbox", "read-only"] },
+    { name: plain.worker.id, kind: "grok", args: [] },
+  ]);
+  // The ledger keeps the name the user chose, which says more than the kind.
+  assert.deepEqual(
+    (await ledger.workers()).map((worker) => worker.harness),
+    ["codex-readonly", "grok"],
+  );
+});
+
+test("worktrees go under the configured directory, and herdr chooses when none is set", async () => {
+  const configured = await setup((root) => ({ worktreeDirectory: join(root, "trees"), harnesses: new Map() }));
+  const { worker } = await spawnWorker(configured.deps, { harness: "codex", repo: configured.repo, task: "one" });
+  assert.equal(worker.worktree, join(configured.root, "trees", "repo", `drover-${worker.id}`));
+  assert.equal(await git(worker.worktree, "branch", "--show-current"), `drover/${worker.id}\n`);
+
+  const unset = await setup();
+  await spawnWorker(unset.deps, { harness: "codex", repo: unset.repo, task: "one" });
+  assert.deepEqual(unset.herdr.requestedPaths, [undefined]);
 });
 
 test("a worker's result file does not show up in git status", async () => {

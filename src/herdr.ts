@@ -32,9 +32,13 @@ export interface LiveAgent {
 
 /** The herdr operations Drover depends on. */
 export interface Herdr {
-  createWorktree(input: { repo: string; branch: string; label: string }): Promise<CreatedWorktree>;
-  /** Rejects with code `agent_not_ready` when the agent comes up blocked, for example on a trust prompt. */
-  startAgent(input: { name: string; kind: string; paneId: string }): Promise<void>;
+  /** Without `path`, herdr places the worktree in its configured worktree directory. */
+  createWorktree(input: { repo: string; branch: string; label: string; path?: string }): Promise<CreatedWorktree>;
+  /**
+   * `args` go to the harness executable as is. Rejects with code `agent_not_ready` when the
+   * agent comes up blocked, for example on a trust prompt.
+   */
+  startAgent(input: { name: string; kind: string; paneId: string; args: string[] }): Promise<void>;
   promptAgent(target: string, text: string): Promise<void>;
   listAgents(): Promise<LiveAgent[]>;
   readScreen(target: string, lines: number): Promise<string>;
@@ -119,10 +123,10 @@ function parseAgent(entry: Json): LiveAgent {
  */
 export function createHerdrCli(bin: string = process.env.HERDR_BIN_PATH ?? "herdr"): Herdr {
   return {
-    async createWorktree({ repo, branch, label }) {
-      const created = parseResult(
-        await run(bin, ["worktree", "create", "--cwd", repo, "--branch", branch, "--label", label, "--no-focus"]),
-      );
+    async createWorktree({ repo, branch, label, path }) {
+      const args = ["worktree", "create", "--cwd", repo, "--branch", branch, "--label", label, "--no-focus"];
+      if (path !== undefined) args.push("--path", path);
+      const created = parseResult(await run(bin, args));
       const worktree = objectField(created, "worktree");
       return {
         workspaceId: stringField(objectField(created, "workspace"), "workspace_id"),
@@ -132,8 +136,10 @@ export function createHerdrCli(bin: string = process.env.HERDR_BIN_PATH ?? "herd
       };
     },
 
-    async startAgent({ name, kind, paneId }) {
-      await run(bin, ["agent", "start", name, "--kind", kind, "--pane", paneId]);
+    async startAgent({ name, kind, paneId, args }) {
+      // Unlike `agent prompt`, `agent start` documents "--" as the start of the harness's own arguments.
+      const harnessArgs = args.length > 0 ? ["--", ...args] : [];
+      await run(bin, ["agent", "start", name, "--kind", kind, "--pane", paneId, ...harnessArgs]);
     },
 
     async promptAgent(target, text) {

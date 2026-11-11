@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { loadConfig } from "./config.ts";
 import { type DispatchDeps, describeWorker, spawnWorker, syncWorkers } from "./dispatch.ts";
 import { createHerdrCli } from "./herdr.ts";
 import { Ledger } from "./ledger.ts";
@@ -15,6 +16,17 @@ async function loadDeps(): Promise<DispatchDeps> {
   return { herdr, ledger, protocol: await readFile(PROTOCOL_FILE, "utf8") };
 }
 
+/** Tells the model which harness names the user has set up, so it can pass them through. */
+function configuredHarnessHint(): string {
+  try {
+    const names = [...loadConfig().harnesses.keys()];
+    return names.length > 0 ? ` Harnesses configured for Drover: ${names.join(", ")}.` : "";
+  } catch {
+    // A broken config is reported when a worker is spawned, where the user can act on it.
+    return "";
+  }
+}
+
 const spawnWorkerTool = defineTool({
   name: "spawn_worker",
   label: "Spawn worker",
@@ -22,7 +34,11 @@ const spawnWorkerTool = defineTool({
     "Start a coding agent in a new git worktree of a repository and hand it a task. " +
     "The task text is delivered to the agent verbatim.",
   parameters: Type.Object({
-    harness: Type.String({ description: "herdr agent kind to start, for example codex, grok, claude or pi" }),
+    harness: Type.String({
+      description:
+        "Harness to start: a herdr agent kind such as codex, grok, claude or pi, or a harness name " +
+        `the user has configured. Use the name the user gave.${configuredHarnessHint()}`,
+    }),
     repo: Type.String({ description: "Absolute path of the git repository the task applies to" }),
     task: Type.String({
       description: "The user's task text, verbatim. Do not summarize, translate or restructure it.",
@@ -35,7 +51,8 @@ const spawnWorkerTool = defineTool({
   executionMode: "sequential",
 
   async execute(_toolCallId, params) {
-    const outcome = await spawnWorker(await loadDeps(), params);
+    // The config is read per spawn, so edits apply to the next worker without a restart.
+    const outcome = await spawnWorker({ ...(await loadDeps()), config: loadConfig() }, params);
     const { worker } = outcome;
     const where = `${worker.worktree} (branch ${worker.branch})`;
     const text =
