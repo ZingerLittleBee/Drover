@@ -1,0 +1,27 @@
+{
+  "name": "drover",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A pi extension that dispatches coding tasks to herdr-managed agents and reports on their progress",
+  "type": "module",
+  "bin": {
+    "drover": "./bin/drover"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
