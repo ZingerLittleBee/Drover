@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Starts the Drover dispatcher: a pi session that can only dispatch and report.
+set -euo pipefail
+
+root="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+exec pi \
+  --extension "$root/src/index.ts" \
+  --no-builtin-tools \
+  --append-system-prompt "$root/prompts/dispatcher.md" \
+  "$@"
